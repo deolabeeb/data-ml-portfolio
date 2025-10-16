@@ -1,0 +1,9 @@
+transformers
+torch
+langchain
+langchain-community
+faiss-cpu
+pandas
+numpy
+python-dotenv
+chainlit
