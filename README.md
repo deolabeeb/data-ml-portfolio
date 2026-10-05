@@ -1,42 +1,25 @@
-# Abeeb Adesina Adeola – Data & ML Engineer Portfolio
+# Abeeb Adesina Adeola — engineering portfolio
 
-Welcome to my portfolio! I am a Data & ML Engineer with 3+ years of experience building **end-to-end ML pipelines, LLM-powered applications, and vector search systems** using Python, PostgreSQL, and modern AI tools. This portfolio demonstrates my ability to integrate AI into real-world projects, write modular and testable code, and deploy production-ready solutions.
+**Python Engineering | AI/ML Applications & Automation**
 
----
+I build Python applications and automation workflows with a focus on reliability, clear interfaces, and reproducible tests. My portfolio shows what I have built, how it is tested, and what I am developing next.
 
-## Projects
+## SupportOps — accepted local mock M1
 
-### 1. [AI-Driven Mental Health Chatbot](./AI-Mental-Health-Chatbot)
-- Built a conversational assistant using **Hugging Face Transformers**, **LangChain**, and **Chainlit**.
-- Implemented **retrieval-augmented generation (RAG)** pipelines for context-aware responses.
-- Deployed in **GitHub Codespaces** for demonstration and testing.
+The flagship is a deterministic Python/FastAPI workflow with typed LangGraph routing, customer-authorized synthetic order lookup, owner-scoped SQLite conversations and bounded failure recovery. Built on the supplied SupportOps starter; original foundation credited.
 
-### 2. [Multimodal Retrieval System with CLIP & FAISS](./Multimodal-CLIP-FAISS)
-- Developed a high-performance **vector search system** for image-text queries.
-- Demonstrated **scalable embeddings**, fast retrieval, and modular design.
+The historical M1 run on 1 October 2026 passed 134 regression tests, including 27 execution-limit cases (Windows 10 X64, CPython 3.12.14, synthetic fixtures). Separate TestClient processes verified restart continuity and customer isolation. Caller waiting is bounded; blocking Python is not forcibly stopped.
 
-### 3. [Financial Data Analysis & Visualization](./Financial-EDA-Visualization)
-- Performed **exploratory data analysis (EDA)** on corporate datasets using Pandas, NumPy, Matplotlib.
-- Extracted actionable insights on **revenue, net income, and growth trends**.
+The optional S04 provider extension is **BLOCKED** by an unresolved timeout. A diagnostic pass is not acceptance. Current source is not offered as an accepted M1 or S04 release; no live model or production deployment is claimed.
 
-### 4. [Task Management RPG Web App](./Task-Management-RPG-Web-App)
-- Developed a full-stack interactive **task management app** using HTML, CSS, JavaScript.
-- Integrated front-end functionality with backend logic for **data-driven project tracking**.
+## Static portfolio files
 
----
+[Homepage HTML](docs/index.html) · [SupportOps case HTML](docs/projects/supportops.html)
 
-## Tech Stack & Tools
+These repository links open static HTML files, not a verified hosted service. A website URL will be recorded only after deployment succeeds and its links are checked. No project repository, live demo or video is fabricated.
 
-- **Programming Languages:** Python, SQL/PostgreSQL, JavaScript  
-- **ML & AI Tools:** Hugging Face Transformers, OpenAI API, LangChain, FAISS, scikit-learn, vector search  
-- **Web & Deployment:** FastAPI, Docker, AWS EC2/SageMaker/S3, Chainlit  
-- **Data & Visualization:** Pandas, NumPy, Matplotlib, Seaborn, Power BI  
-- **Collaboration & Dev Tools:** Git/GitHub, GitHub Copilot, Cursor, remote teamwork  
+## Planned tracks and preserved history
 
----
+DocOps, LeadOps, FinanceOps, DataOps, PredictOps and AgentEval remain planned. Existing project history retains original/coursework/fork attribution and licenses; historical directories are not implementations of these new tracks.
 
-## Contact
-
-- **Email:** deolabeeb@gmail.com  
-- **LinkedIn:** [linkedin.com/in/abeeb-adesina](https://linkedin.com/in/abeeb-adesina)  
-- **GitHub:** [github.com/deolabeeb](https://github.com/deolabeeb)
+[GitHub](https://github.com/deolabeeb) · [Email](mailto:deolabeeb@gmail.com) · [LinkedIn](https://linkedin.com/in/abeeb-adesina)
