@@ -4,6 +4,8 @@
 
 I build Python applications and automation workflows with a focus on reliability, clear interfaces, and reproducible tests. My portfolio shows what I have built, how it is tested, and what I am developing next.
 
+[Portfolio website](https://deolabeeb.github.io/data-ml-portfolio/) · [SupportOps case study](https://deolabeeb.github.io/data-ml-portfolio/projects/supportops.html)
+
 ## SupportOps — accepted local mock M1
 
 The flagship is a deterministic Python/FastAPI workflow with typed LangGraph routing, customer-authorized synthetic order lookup, owner-scoped SQLite conversations and bounded failure recovery. Built on the supplied SupportOps starter; original foundation credited.
@@ -16,7 +18,7 @@ The optional S04 provider extension is **BLOCKED** by an unresolved timeout. A d
 
 [Homepage HTML](docs/index.html) · [SupportOps case HTML](docs/projects/supportops.html)
 
-These repository links open static HTML files, not a verified hosted service. A website URL will be recorded only after deployment succeeds and its links are checked. No project repository, live demo or video is fabricated.
+These repository links open static HTML files. The published portfolio website and SupportOps case study are static pages; the SupportOps application remains a local mock, not a live service. No project repository, live demo or video is fabricated.
 
 ## Planned tracks and preserved history
 
