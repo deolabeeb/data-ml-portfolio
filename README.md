@@ -6,13 +6,17 @@ I build Python applications and automation workflows with a focus on reliability
 
 [Portfolio website](https://deolabeeb.github.io/data-ml-portfolio/) · [SupportOps case study](https://deolabeeb.github.io/data-ml-portfolio/projects/supportops.html)
 
-## SupportOps — accepted local mock M1
+## SupportOps — locally tested support prototype
 
 The flagship is a deterministic Python/FastAPI workflow with typed LangGraph routing, customer-authorized synthetic order lookup, owner-scoped SQLite conversations and bounded failure recovery. Built on the supplied SupportOps starter; original foundation credited.
 
-The historical M1 run on 1 October 2026 passed 134 regression tests, including 27 execution-limit cases (Windows 10 X64, CPython 3.12.14, synthetic fixtures). Separate TestClient processes verified restart continuity and customer isolation. Caller waiting is bounded; blocking Python is not forcibly stopped.
+The accepted prototype run on 1 October 2026 passed 134 regression tests, including 27 execution-limit cases (Windows 10 X64, Python 3.12.14, synthetic fixtures). Separate test processes verified restart continuity and customer isolation. Timeouts limit caller waiting; blocking Python is not forcibly stopped. Extensions were developed with Codex assistance.
 
-The optional S04 provider extension is **BLOCKED** by an unresolved timeout. A diagnostic pass is not acceptance. Current source is not offered as an accepted M1 or S04 release; no live model or production deployment is claimed.
+An optional model-provider extension remains unfinished because of an unresolved timeout. Passing diagnostic tests did not resolve that problem. The current working source includes unfinished changes and is not presented as the verified prototype release. No live-model integration or production deployment is claimed.
+
+## Open-source contribution focus
+
+I want to apply my Python engineering work to useful open-source contributions: clear bug reports, small fixes, regression tests and practical documentation. My goal is to build a record of reviewed contributions and progress into paid contributor work. I will link accepted contributions here as they become available.
 
 ## Static portfolio files
 
