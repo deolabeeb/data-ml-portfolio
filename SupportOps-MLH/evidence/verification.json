@@ -1,0 +1,56 @@
+{
+  "as_of": "2026-10-23",
+  "candidate": "0.1.0+mlh.mock1",
+  "python": "3.12.14",
+  "os": "Windows",
+  "dependencies": {
+    "fastapi": "0.128.2",
+    "pydantic": "2.13.4",
+    "langgraph": "1.2.12",
+    "langgraph-checkpoint-sqlite": "3.1.1",
+    "langsmith": "0.14.2",
+    "uvicorn": "0.48.0",
+    "httpx": "0.28.1",
+    "pytest": "9.0.2"
+  },
+  "tests": {
+    "passed": 139,
+    "failed": 0,
+    "skipped": 0,
+    "inherited_cases": 134,
+    "new_sample_cases": 5,
+    "seconds": 23.52,
+    "warnings": 1
+  },
+  "demo": {
+    "statuses": [
+      201,
+      200,
+      200,
+      404,
+      503,
+      200
+    ],
+    "successful_turn_counts": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "transport": "in-process FastAPI TestClient; not deployment"
+  },
+  "original_source_hashes_unchanged": 32,
+  "network": "Application socket connects forbidden by tests/demo",
+  "live_model_calls": 0,
+  "ci": "Not run remotely",
+  "new_environment_install": "Not verified; reused established project dependencies",
+  "owner_teach_back": "Prepared, not performed",
+  "publication": "Not pushed or submitted",
+  "prior_baseline": "Current original working tree192passed35.09s; S04 remains historically blocked",
+  "preserved_failure": "First candidate137passed2failed: legacy error-message prefix; implementation fixed, tests unchanged",
+  "packaging": {
+    "wheel_build": "PASS with bundled setuptools/wheel; no downloads",
+    "wheel_install_probe": "PASS; installed into an isolated target directory, dependencies reused",
+    "earlier_build_attempt": "Project venv lacked setuptools backend; retained failed receipt, no global/project dependencies changed"
+  }
+}

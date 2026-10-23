@@ -1,0 +1,90 @@
+{
+  "completed_at": "2026-10-23T06:37:09.405105+00:00",
+  "mode": "mock",
+  "llm_calls": 0,
+  "transport": "in-process FastAPI TestClient",
+  "events": [
+    {
+      "choice": "1",
+      "status": 201,
+      "response": {
+        "conversation_id": "e809040c-15f1-4b09-8ba5-d7de15f4a6d6",
+        "turn_count": 0
+      }
+    },
+    {
+      "choice": "2",
+      "status": 200,
+      "response": {
+        "conversation_id": "e809040c-15f1-4b09-8ba5-d7de15f4a6d6",
+        "turn_count": 1,
+        "response": {
+          "request_id": "533188de-8a45-42b3-912a-cec4b81d5727",
+          "mode": "mock",
+          "intent": "order_status",
+          "answer": "Synthetic order ORD-1001: in_transit. Delivery: 2026-10-05 (synthetic estimate).",
+          "citations": [],
+          "proposed_action": null,
+          "action_executed": false,
+          "llm_calls": 0
+        }
+      }
+    },
+    {
+      "choice": "3",
+      "status": 200,
+      "response": {
+        "conversation_id": "e809040c-15f1-4b09-8ba5-d7de15f4a6d6",
+        "turn_count": 2,
+        "response": {
+          "request_id": "b5548162-9245-4273-b7ff-e7d1432fffcc",
+          "mode": "mock",
+          "intent": "order_status",
+          "answer": "Synthetic order ORD-1001: in_transit. Delivery: 2026-10-05 (synthetic estimate).",
+          "citations": [],
+          "proposed_action": null,
+          "action_executed": false,
+          "llm_calls": 0
+        }
+      }
+    },
+    {
+      "choice": "4",
+      "status": 404,
+      "response": {
+        "detail": "Conversation not found."
+      }
+    },
+    {
+      "choice": "5",
+      "status": 503,
+      "response": {
+        "detail": {
+          "outcome": "step_limit",
+          "request_id": "07b6ee09-103d-44a4-8664-fc095e8fa349",
+          "mode": "mock",
+          "llm_calls": 0,
+          "action_executed": false
+        }
+      }
+    },
+    {
+      "choice": "6",
+      "status": 200,
+      "response": {
+        "conversation_id": "e809040c-15f1-4b09-8ba5-d7de15f4a6d6",
+        "turn_count": 3,
+        "response": {
+          "request_id": "25aa5769-483c-4a9e-8c93-4d4119348403",
+          "mode": "mock",
+          "intent": "order_status",
+          "answer": "Synthetic order ORD-1001: in_transit. Delivery: 2026-10-05 (synthetic estimate).",
+          "citations": [],
+          "proposed_action": null,
+          "action_executed": false,
+          "llm_calls": 0
+        }
+      }
+    }
+  ]
+}
