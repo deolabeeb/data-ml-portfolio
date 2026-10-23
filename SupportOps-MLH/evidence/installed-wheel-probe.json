@@ -1,0 +1,14 @@
+{
+  "version": "0.1.0+mlh.mock1",
+  "installed_source_verified": true,
+  "packaged_html_and_json_fixtures": true,
+  "cases": [
+    "browser page",
+    "own order",
+    "foreign order",
+    "policy"
+  ],
+  "dependencies": "Reused established environment; not fresh dependency resolution",
+  "application_network": "blocked",
+  "live_calls": 0
+}

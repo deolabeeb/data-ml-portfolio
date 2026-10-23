@@ -1,0 +1,1914 @@
+--- starter/scripts/conversation_process_probe.py
++++ sample/scripts/conversation_process_probe.py
+@@ -0,0 +1,35 @@
++"""Synthetic API probe run in separate terminated processes by S02 tests."""
++import asyncio
++import json
++import os
++from pathlib import Path
++import socket
++import sys
++from fastapi.testclient import TestClient
++from supportops.config import Settings
++from supportops.main import create_app
++
++loop = asyncio.new_event_loop()  # Windows infrastructure before outbound guard.
++def blocked(*args, **kwargs):
++    raise AssertionError("Network forbidden in process probe")
++socket.create_connection = blocked
++socket.socket.connect = blocked
++with TestClient(create_app(Settings(conversation_db=Path(sys.argv[1]))),
++                backend_options={"loop_factory": lambda: loop}) as client:
++    a = {"Authorization": "Bearer demo-customer-a"}
++    b = {"Authorization": "Bearer demo-customer-b"}
++    if sys.argv[2] == "create":
++        created = client.post("/v1/conversations", json={}, headers=a)
++        assert created.status_code == 201
++        cid = created.json()["conversation_id"]
++        message = "Where is ORD-1001?"
++    else:
++        cid = sys.argv[3]
++        message = "And when will it arrive?"
++    result = client.post(f"/v1/conversations/{cid}/chat", json={"message": message}, headers=a)
++    assert result.status_code == 200, result.text
++    foreign = client.post(f"/v1/conversations/{cid}/chat", json={"message": message}, headers=b)
++    assert foreign.status_code == 404
++    print(json.dumps({**result.json(), "pid": os.getpid(), "foreign_status": foreign.status_code}))
++if not loop.is_closed():
++    loop.close()
+--- starter/scripts/demo_m1.py
++++ sample/scripts/demo_m1.py
+@@ -0,0 +1,68 @@
++"""Interactive, synthetic two-customer API demo and controlled failure path.
++
++Uses FastAPI TestClient, not a deployed HTTP service. No network or model calls.
++Choose a fresh output folder; actual commands/responses are saved after exit.
++"""
++import argparse
++import asyncio
++from datetime import datetime, timezone
++import json
++from pathlib import Path
++import socket
++
++from fastapi.testclient import TestClient
++from supportops.config import Settings
++from supportops.execution import ExecutionPolicy
++from supportops.main import create_app
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--output", type=Path, required=True)
++    args = parser.parse_args()
++    out = args.output.resolve()
++    out.mkdir(parents=True, exist_ok=False)
++    db = out / "demo.sqlite3"
++    loop, failure_loop = asyncio.new_event_loop(), asyncio.new_event_loop()
++    def blocked(*args, **kwargs):
++        raise AssertionError("Network forbidden in M1 demo")
++    socket.create_connection = blocked
++    socket.socket.connect = blocked
++    headers = {"a": {"Authorization": "Bearer demo-customer-a"},
++               "b": {"Authorization": "Bearer demo-customer-b"}}
++    events = []
++    cid = None
++    print("Local synthetic M1 demo; no network, model calls, or actions.")
++    print("1 create A | 2 A order | 3 A follow-up | 4 B denied | 5 bounded failure | 6 A recover | q quit")
++    with TestClient(create_app(Settings(conversation_db=db)), backend_options={"loop_factory": lambda: loop}) as normal, \
++         TestClient(create_app(Settings(conversation_db=db, execution=ExecutionPolicy(max_steps=1))),
++                    backend_options={"loop_factory": lambda: failure_loop}) as limited:
++        while True:
++            choice = input("Choice: ").strip().lower()
++            if choice == "q":
++                break
++            if choice == "1":
++                response = normal.post("/v1/conversations", json={}, headers=headers["a"])
++                cid = response.json()["conversation_id"]
++            elif choice in {"2", "3", "4", "5", "6"} and cid:
++                client = limited if choice == "5" else normal
++                message = "Where is ORD-1001?" if choice == "2" else "And when will it arrive?"
++                response = client.post(f"/v1/conversations/{cid}/chat", json={"message": message},
++                                       headers=headers["b" if choice == "4" else "a"])
++            else:
++                print("Create a conversation first; choose 1–6 or q.")
++                continue
++            event = {"choice": choice, "status": response.status_code, "response": response.json()}
++            events.append(event)
++            print(json.dumps(event))
++    for event_loop in (loop, failure_loop):
++        if not event_loop.is_closed():
++            event_loop.close()
++    result = {"completed_at": datetime.now(timezone.utc).isoformat(), "mode": "mock", "llm_calls": 0,
++              "transport": "in-process FastAPI TestClient", "events": events}
++    (out / "demo.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
++    print(f"Saved {out / 'demo.json'}")
++
++
++if __name__ == "__main__":
++    main()
+--- starter/src/supportops/__init__.py
++++ sample/src/supportops/__init__.py
+@@ -1,2 +1,2 @@
+-"""SupportOps Agent: synthetic, local-only foundation; no LLM at milestone zero."""
+-__version__ = "0.1.0"
++"""SupportOps Agent: synthetic, local-only foundation; no LLM at milestone zero."""
++__version__ = "0.1.0+mlh.mock1"
+--- starter/src/supportops/config.py
++++ sample/src/supportops/config.py
+@@ -1,23 +1,22 @@
+-"""Fail closed outside the explicitly supported local mock configuration."""
+-from dataclasses import dataclass
+-import os
+-
+-
+-@dataclass(frozen=True)
+-class Settings:
+-    app_env: str = "local"
+-    llm_mode: str = "mock"
+-
+-    def __post_init__(self) -> None:
+-        if self.app_env != "local" or self.llm_mode != "mock":
+-            raise ValueError(
+-                "M0 supports APP_ENV=local and LLM_MODE=mock only. "
+-                "Public deployment and live providers are not implemented."
+-            )
+-
+-    @classmethod
+-    def from_env(cls) -> "Settings":
+-        return cls(
+-            app_env=os.environ.get("APP_ENV", "local"),
+-            llm_mode=os.environ.get("LLM_MODE", "mock"),
+-        )
++"""The MLH sample is local and deterministic; live modes fail closed."""
++from dataclasses import dataclass, field
++from pathlib import Path
++import os
++from supportops.execution import ExecutionPolicy
++
++@dataclass(frozen=True)
++class Settings:
++    app_env: str = "local"
++    llm_mode: str = "mock"
++    conversation_db: Path = Path("data/conversations.sqlite3")
++    execution: ExecutionPolicy = field(default_factory=ExecutionPolicy)
++
++    def __post_init__(self):
++        if self.app_env != "local" or self.llm_mode != "mock":
++            raise ValueError("M0 supports local mock mode only; MLH sample has no live adapter")
++
++    @classmethod
++    def from_env(cls):
++        return cls(app_env=os.environ.get("APP_ENV", "local"),
++                   llm_mode=os.environ.get("LLM_MODE", "mock"),
++                   conversation_db=Path(os.environ.get("SUPPORTOPS_CONVERSATION_DB", "data/conversations.sqlite3")))
+--- starter/src/supportops/conversations.py
++++ sample/src/supportops/conversations.py
+@@ -0,0 +1,196 @@
++"""Owner-guarded SQLite conversations and real LangGraph checkpoints.
++
++One connection/saver per operation, never shared between requests. A whole turn
++is a single BEGIN IMMEDIATE transaction, including checkpoints and turn count.
++The saver's lock protects its graph-worker accesses; no intermediate commits.
++"""
++from contextlib import closing, contextmanager
++import json
++from pathlib import Path
++import sqlite3
++from typing import Any, Iterator
++from uuid import UUID, uuid4
++
++from langgraph.checkpoint.sqlite import SqliteSaver
++from langsmith import tracing_context
++from pydantic import BaseModel
++
++from supportops.graph import SupportContext, build_support_graph
++from supportops.schemas import ChatRequest, ChatResponse, ConversationResponse, ConversationView, Principal
++from supportops.execution import ExecutionBudget, ExecutionPolicy, ExecutionFailure, classify_failure
++
++
++class ConversationNotFound(Exception):
++    """Deliberately identical for foreign and nonexistent conversations."""
++
++
++class JsonStateSerializer:
++    """Data-only JSON: no pickle, dynamic imports, or object reconstruction."""
++
++    def dumps_typed(self, value: Any) -> tuple[str, bytes]:
++        def encode(item):
++            if isinstance(item, BaseModel):
++                return item.model_dump(mode="json")
++            if isinstance(item, UUID):
++                return str(item)
++            raise TypeError(f"Unsupported checkpoint type: {type(item).__name__}")
++        return "json", json.dumps(value, default=encode).encode("utf-8")
++
++    def loads_typed(self, value: tuple[str, bytes]) -> Any:
++        kind, data = value
++        if kind != "json":
++            raise ValueError("Unsupported checkpoint encoding")
++        return json.loads(data)
++
++
++def require_owner(conn: sqlite3.Connection, conversation_id: str, principal: Principal) -> int:
++    row = conn.execute(
++        "SELECT turn_count FROM conversations WHERE id = ? AND owner_id = ?",
++        (conversation_id, principal.customer_id),
++    ).fetchone()
++    if row is None:
++        raise ConversationNotFound()
++    return row[0]
++
++
++class OwnedSqliteSaver(SqliteSaver):
++    """Request-private saver; every checkpoint cursor revalidates its owner.
++
++Only the service constructs graph configuration. No public arbitrary checkpoint
++IDs, namespaces, get_state, or resume(None) interface is exposed.
++"""
++
++    def __init__(self, conn: sqlite3.Connection, conversation_id: str, principal: Principal):
++        super().__init__(conn, serde=JsonStateSerializer())
++        self.conversation_id = conversation_id
++        self.principal = principal
++        self.is_setup = True  # Schema was initialized before the turn transaction.
++
++    def check_scope(self, config):
++        scope = config.get("configurable", {})
++        if scope.get("thread_id") != self.conversation_id or scope.get("checkpoint_ns", "") != "":
++            raise ConversationNotFound()
++        with self.lock:
++            require_owner(self.conn, self.conversation_id, self.principal)
++
++    def get_tuple(self, config):
++        self.check_scope(config)
++        return super().get_tuple(config)
++
++    def put(self, config, checkpoint, metadata, new_versions):
++        self.check_scope(config)
++        return super().put(config, checkpoint, metadata, new_versions)
++
++    def put_writes(self, config, writes, task_id, task_path=""):
++        self.check_scope(config)
++        return super().put_writes(config, writes, task_id, task_path)
++
++    def list(self, config, **kwargs):
++        # Enumeration/history is deliberately not part of the S02 service.
++        raise ConversationNotFound()
++
++    def delete_thread(self, thread_id):
++        # No retention/delete operation is authorized by this API yet.
++        raise ConversationNotFound()
++
++    @contextmanager
++    def cursor(self, transaction: bool = True) -> Iterator[sqlite3.Cursor]:
++        with self.lock:
++            require_owner(self.conn, self.conversation_id, self.principal)
++            with closing(self.conn.cursor()) as cursor:
++                yield cursor
++        # Deliberately no commit: the service commits only a successful whole turn.
++
++
++class ConversationService:
++    def __init__(self, database: Path, *, policy: ExecutionPolicy | None = None, budget_factory=ExecutionBudget,
++                 route_provider=None):
++        self.database = Path(database)
++        self.policy = policy or ExecutionPolicy()
++        self.budget_factory = budget_factory
++        self.route_provider = route_provider
++
++    @contextmanager
++    def connection(self, budget: ExecutionBudget | None = None) -> Iterator[sqlite3.Connection]:
++        self.database.parent.mkdir(parents=True, exist_ok=True)
++        # Graph persistence uses worker threads; the saver lock serializes access.
++        # This connection is exclusive to one operation and closes after invoke.
++        timeout = min(1.0, self.policy.turn_seconds)
++        if budget:
++            budget.check()
++            timeout = min(timeout, self.policy.turn_seconds - (budget.clock() - budget.started))
++        with closing(sqlite3.connect(self.database, timeout=timeout, check_same_thread=False)) as conn:
++            version = conn.execute("PRAGMA user_version").fetchone()[0]
++            if version not in (0, 1):
++                raise ValueError("Unsupported conversation database schema version")
++            conn.execute("CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, "
++                         "owner_id TEXT NOT NULL, turn_count INTEGER NOT NULL DEFAULT 0, "
++                         "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, "
++                         "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
++            conn.execute("CREATE TRIGGER IF NOT EXISTS immutable_conversation_owner "
++                         "BEFORE UPDATE OF owner_id, id ON conversations "
++                         "BEGIN SELECT RAISE(ABORT, 'Conversation ownership is immutable'); END")
++            conn.execute("PRAGMA user_version = 1")
++            conn.commit()
++            # Schema-only setup, not a checkpoint read or write.
++            SqliteSaver(conn, serde=JsonStateSerializer()).setup()
++            conn.execute("BEGIN IMMEDIATE")
++            try:
++                if budget:
++                    budget.check()
++                yield conn
++                if budget:
++                    budget.check()
++                conn.commit()
++            except BaseException:
++                conn.rollback()
++                raise
++
++    def create(self, principal: Principal) -> ConversationView:
++        conversation_id = uuid4()
++        with self.connection() as conn:
++            conn.execute("INSERT INTO conversations (id, owner_id) VALUES (?, ?)",
++                         (str(conversation_id), principal.customer_id))
++        return ConversationView(conversation_id=conversation_id, turn_count=0)
++
++    def read(self, conversation_id: UUID, principal: Principal) -> ConversationView:
++        with self.connection() as conn:
++            count = require_owner(conn, str(conversation_id), principal)
++        # No owner identifiers, private messages, or raw checkpoints in the API.
++        return ConversationView(conversation_id=conversation_id, turn_count=count)
++
++    def respond(self, conversation_id: UUID, message: str, principal: Principal) -> ConversationResponse:
++        request = ChatRequest(message=message)
++        principal = Principal.model_validate(principal)
++        budget = self.budget_factory(self.policy)
++        try:
++            with self.connection(budget) as conn:
++                count = require_owner(conn, str(conversation_id), principal)
++                saver = OwnedSqliteSaver(conn, str(conversation_id), principal)
++                graph = build_support_graph(checkpointer=saver, route_provider=self.route_provider)
++                with tracing_context(enabled=False):
++                    output = graph.invoke({"message": request.message}, context=SupportContext(principal, budget),
++                                          config={"configurable": {"thread_id": str(conversation_id)},
++                                                  "recursion_limit": budget.policy.max_steps, "callbacks": []})
++                budget.check()
++                if not output or output.get("response") is None:
++                    raise ExecutionFailure("no_op")
++                response = ChatResponse.model_validate(output["response"]).model_copy(update={"request_id": budget.request_id})
++                require_owner(conn, str(conversation_id), principal)
++                conn.execute("UPDATE conversations SET turn_count = turn_count + 1, "
++                             "updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_id = ?",
++                             (str(conversation_id), principal.customer_id))
++            budget.record(response.intent)
++            return ConversationResponse(conversation_id=conversation_id, turn_count=count + 1, response=response)
++        except Exception as error:
++            budget.record("access_denied" if isinstance(error, ConversationNotFound) else classify_failure(error))
++            error.supportops_request_id = budget.request_id
++            error.supportops_mode = budget.mode
++            error.supportops_llm_calls = budget.llm_calls
++            if classify_failure(error) == "step_limit" and not isinstance(error, ExecutionFailure):
++                bounded = ExecutionFailure("step_limit")
++                bounded.supportops_request_id = budget.request_id
++                bounded.supportops_mode = budget.mode
++                bounded.supportops_llm_calls = budget.llm_calls
++                raise bounded from None
++            raise
+--- starter/src/supportops/execution.py
++++ sample/src/supportops/execution.py
+@@ -0,0 +1,154 @@
++"""Server-owned bounds for local read-only mock execution, never LLM state.
++
++Timeout bounds caller waiting, NOT cancellation of arbitrary blocking Python.
++Daemon worker slots remain occupied until the operation exits: finite exhaustion
++fails closed instead of creating unlimited workers. No retries or side effects.
++"""
++from dataclasses import dataclass
++import json
++import logging
++from queue import Empty, Queue
++from threading import BoundedSemaphore, Thread
++from time import monotonic
++from typing import Callable, TypeVar
++from uuid import uuid4
++
++from langgraph.errors import GraphRecursionError
++from pydantic import ValidationError
++
++T = TypeVar("T")
++LOGGER = logging.getLogger("supportops.execution")
++if not LOGGER.handlers:
++    handler = logging.StreamHandler()  # Safe metadata only; stderr, never JSON stdout.
++    handler.setFormatter(logging.Formatter("%(message)s"))
++    LOGGER.addHandler(handler)
++LOGGER.setLevel(logging.INFO)
++
++
++class ExecutionFailure(RuntimeError):
++    def __init__(self, outcome: str):
++        self.outcome = outcome
++        super().__init__(outcome)
++
++
++@dataclass(frozen=True)
++class ExecutionPolicy:
++    max_steps: int = 8
++    max_requests: int = 6
++    max_tools: int = 4
++    tool_seconds: float = 2.0
++    turn_seconds: float = 20.0
++
++    def __post_init__(self):
++        if any(type(value) is not int or not 1 <= value <= 32 for value in
++               (self.max_steps, self.max_requests, self.max_tools)):
++            raise ValueError("Execution counters must be integers from 1 to 32")
++        if any(not 0 < value <= 20 for value in (self.tool_seconds, self.turn_seconds)):
++            raise ValueError("Execution time limits must be positive and at most 20 seconds")
++
++
++class ReadOnlyRunner:
++    """Bounded daemon workers; never pass SQLite connections or mutable state."""
++    def __init__(self, capacity: int = 4):
++        self.slots = BoundedSemaphore(capacity)
++
++    def run(self, operation: Callable[[], T], timeout: float) -> T:
++        if not self.slots.acquire(blocking=False):
++            raise ExecutionFailure("capacity_exhausted")
++        result: Queue = Queue(maxsize=1)
++
++        def work():
++            try:
++                try:
++                    completed = (True, operation())
++                except Exception as error:
++                    completed = (False, error)
++            finally:
++                self.slots.release()
++            result.put(completed)
++
++        worker = Thread(target=work, name="supportops-read-only", daemon=True)
++        try:
++            worker.start()
++        except BaseException:
++            self.slots.release()
++            raise
++        try:
++            success, value = result.get(timeout=timeout)
++        except Empty:
++            raise ExecutionFailure("tool_timeout") from None
++        if not success:
++            raise value
++        return value
++
++
++DEFAULT_RUNNER = ReadOnlyRunner()  # Global finite cap, including timed-out workers.
++
++
++def classify_failure(error: Exception) -> str:
++    if isinstance(error, ExecutionFailure):
++        return error.outcome
++    if isinstance(error, GraphRecursionError):
++        return "step_limit"
++    if isinstance(error, ValidationError):
++        return "malformed_output"
++    if isinstance(error, TimeoutError):
++        return "tool_timeout"
++    return "tool_failure"
++
++
++class ExecutionBudget:
++    def __init__(self, policy: ExecutionPolicy | None = None, *, clock=monotonic,
++                 runner: ReadOnlyRunner | None = None):
++        self.policy = policy or ExecutionPolicy()
++        self.clock = clock
++        self.runner = runner or DEFAULT_RUNNER
++        self.started = clock()
++        self.request_id = uuid4()
++        self.steps = self.requests = self.tools = 0
++        self.last_operation = "none"
++        self.mode = "mock"
++        self.llm_calls = 0
++
++    def check(self):
++        if self.clock() - self.started >= self.policy.turn_seconds:
++            raise ExecutionFailure("turn_timeout")
++
++    def step(self):
++        self.check()
++        self.steps += 1
++        if self.steps > self.policy.max_steps:
++            raise ExecutionFailure("step_limit")
++
++    def call(self, name: str, operation: Callable[[], T], *, tool: bool = True) -> T:
++        self.check()
++        self.last_operation = name  # Only fixed server-defined operation names.
++        self.requests += 1
++        self.tools += int(tool)
++        if self.requests > self.policy.max_requests:
++            raise ExecutionFailure("request_limit")
++        if self.tools > self.policy.max_tools:
++            raise ExecutionFailure("tool_limit")
++        remaining = self.policy.turn_seconds - (self.clock() - self.started)
++        allowance = min(self.policy.tool_seconds, remaining)
++        before = self.clock()
++        try:
++            value = self.runner.run(operation, allowance)
++        except ExecutionFailure as error:
++            if error.outcome == "tool_timeout" and remaining <= self.policy.tool_seconds:
++                raise ExecutionFailure("turn_timeout") from None
++            raise
++        self.check()
++        if self.clock() - before >= self.policy.tool_seconds:
++            raise ExecutionFailure("tool_timeout")
++        if value is None and name not in {"order_lookup", "memory_lookup"}:
++            raise ExecutionFailure("no_op")
++        return value
++
++    def record(self, outcome: str):
++        # No message, owner, conversation/order ID, exception, token or reasoning.
++        LOGGER.info(json.dumps({"request_id": str(self.request_id), "mode": self.mode,
++                                "outcome": outcome, "operation": self.last_operation,
++                                "steps": self.steps, "requests": self.requests, "tools": self.tools,
++                                "elapsed_ms": round(max(0, self.clock() - self.started) * 1000, 3),
++                                "llm_calls": self.llm_calls, "retries": 0}))
+--- starter/src/supportops/graph.py
++++ sample/src/supportops/graph.py
+@@ -0,0 +1,178 @@
++"""Typed routing: stateless by default, owner-guarded checkpointing in S02.
++
++Only the message enters the public graph input. Authorization comes from the
++server-owned, immutable runtime context; no customer identity is a state field.
++"""
++from dataclasses import dataclass
++from typing import TypedDict
++
++from langgraph.graph import END, START, StateGraph
++from langgraph.checkpoint.base import BaseCheckpointSaver
++from langgraph.graph.state import CompiledStateGraph
++from langgraph.runtime import Runtime
++from langsmith import tracing_context
++
++from supportops.provider import MockSupportProvider, Route, RoutePlan, RouteProvider
++from supportops.schemas import ChatRequest, ChatResponse, Principal
++from supportops.tools import lookup_order
++from supportops.execution import ExecutionBudget, ExecutionPolicy, ExecutionFailure, classify_failure
++
++
++class GraphInput(TypedDict):
++    message: str
++
++
++class GraphOutput(TypedDict):
++    response: ChatResponse
++
++
++class GraphState(GraphInput, total=False):
++    plan: RoutePlan
++    response: ChatResponse
++    last_order: str | None
++
++
++class GraphUpdate(TypedDict, total=False):
++    plan: RoutePlan
++    response: ChatResponse
++    last_order: str | None
++
++
++@dataclass(frozen=True)
++class SupportContext:
++    principal: Principal
++    budget: ExecutionBudget | None = None
++
++
++def build_support_graph(provider: MockSupportProvider | None = None, *,
++                        route_provider: RouteProvider | None = None,
++                        checkpointer: BaseCheckpointSaver | None = None) -> CompiledStateGraph:
++    operations = provider if provider is not None else MockSupportProvider()
++
++    def call(runtime, name, operation, *, tool=True):
++        budget = runtime.context.budget
++        return budget.call(name, operation, tool=tool) if budget else operation()
++
++    def step(runtime):
++        if runtime.context.budget:
++            runtime.context.budget.step()
++
++    def route(state: GraphState, runtime: Runtime[SupportContext]) -> GraphUpdate:
++        step(runtime)
++        # Validate at this boundary too: direct graph callers cannot bypass the
++        # API's message contract. Only the server's route planner chooses a node.
++        message = ChatRequest(message=state["message"]).message
++        if checkpointer is not None and message.lower().rstrip("?.!") in {
++            "and when will it arrive", "when will it arrive", "where is it",
++            "what is its status", "refund it", "cancel it",
++        }:
++            last_order = state.get("last_order")
++            # Memory is only a reference, never permission or a cached order result.
++            if not last_order or call(runtime, "memory_lookup", lambda: lookup_order(runtime.context.principal, last_order)) is None:
++                return {"plan": RoutePlan(route="clarify", reason="missing_order_id"), "last_order": None}
++            message = f"{message} {last_order}"
++        if route_provider is not None:
++            if runtime.context.budget is None:
++                raise ExecutionFailure("missing_budget")
++            proposed = route_provider.plan(message, runtime.context.budget)
++        else:
++            proposed = call(runtime, "route_plan", lambda: operations.plan(message), tool=False)
++        # Revalidate even model instances (including model_construct/copy bypasses).
++        plan = RoutePlan.model_validate(proposed.model_dump() if isinstance(proposed, RoutePlan) else proposed)
++        return {"plan": plan}
++
++    def order_status(state: GraphState, runtime: Runtime[SupportContext]) -> GraphUpdate:
++        step(runtime)
++        return {"response": call(runtime, "order_status", lambda: operations.order_status(state["plan"], runtime.context.principal))}
++
++    def review_request(state: GraphState, runtime: Runtime[SupportContext]) -> GraphUpdate:
++        step(runtime)
++        return {"response": call(runtime, "review_request", lambda: operations.review_request(state["plan"], runtime.context.principal))}
++
++    def policy(state: GraphState, runtime: Runtime[SupportContext]) -> GraphUpdate:
++        step(runtime)
++        return {"response": call(runtime, "policy", lambda: operations.policy(state["plan"]))}
++
++    def clarify(state: GraphState, runtime: Runtime[SupportContext]) -> GraphUpdate:
++        step(runtime)
++        response = call(runtime, "clarify", lambda: operations.clarify(state["plan"]), tool=False)
++        if checkpointer is not None and state["plan"].reason == "missing_order_id":
++            response = response.model_copy(update={"answer": "Please provide an order ID from your account."})
++        return {"response": response}
++
++    def abstain(state: GraphState, runtime: Runtime[SupportContext]) -> GraphUpdate:
++        step(runtime)
++        return {"response": call(runtime, "abstain", lambda: operations.abstain(state["plan"]), tool=False)}
++
++    def finish(state: GraphState, runtime: Runtime[SupportContext]) -> GraphUpdate:
++        step(runtime)
++        response = ChatResponse.model_validate(state["response"])
++        if runtime.context.budget:
++            response = response.model_copy(update={"mode": runtime.context.budget.mode,
++                                                   "llm_calls": runtime.context.budget.llm_calls})
++        update: GraphUpdate = {"response": response}
++        if checkpointer is not None:
++            plan = RoutePlan.model_validate(state["plan"])
++            if plan.order_id:
++                # A denied explicit reference clears prior context conservatively.
++                update["last_order"] = (plan.order_id if response.intent in {
++                    "order_status", "review_request"
++                } and call(runtime, "order_lookup", lambda: lookup_order(runtime.context.principal, plan.order_id)) is not None else None)
++        return update
++
++    def next_route(state: GraphState) -> Route:
++        return state["plan"].route
++
++    builder = StateGraph(GraphState, input_schema=GraphInput,
++                         output_schema=GraphOutput, context_schema=SupportContext)
++    builder.add_node("route", route)
++    for name, node in {"order_status": order_status, "review_request": review_request,
++                       "policy": policy, "clarify": clarify, "abstain": abstain}.items():
++        builder.add_node(name, node)
++        builder.add_edge(name, "finish")
++    builder.add_node("finish", finish)
++    builder.add_edge(START, "route")
++    builder.add_conditional_edges("route", next_route,
++                                  {name: name for name in (
++                                      "order_status", "review_request", "policy", "clarify", "abstain")})
++    builder.add_edge("finish", END)
++    return builder.compile(checkpointer=checkpointer)  # Stateless remains the default.
++
++
++class GraphSupportProvider:
++    def __init__(self, provider: MockSupportProvider | None = None, *, policy: ExecutionPolicy | None = None,
++                 budget_factory=ExecutionBudget, route_provider: RouteProvider | None = None) -> None:
++        self.graph = build_support_graph(provider, route_provider=route_provider)
++        self.policy = policy or ExecutionPolicy()
++        self.budget_factory = budget_factory
++
++    def respond(self, message: str, principal: Principal) -> ChatResponse:
++        request = ChatRequest(message=message)
++        budget = self.budget_factory(self.policy)
++        context = SupportContext(principal=Principal.model_validate(principal), budget=budget)
++        # Disable remote tracing even if inherited environment opts into it.
++        # No user-supplied callbacks, context, config or state reach this call.
++        try:
++            with tracing_context(enabled=False):
++                output = self.graph.invoke({"message": request.message},
++                                           config={"recursion_limit": budget.policy.max_steps, "callbacks": []},
++                                           context=context)
++            budget.check()
++            if not output or output.get("response") is None:
++                raise ExecutionFailure("no_op")
++            response = ChatResponse.model_validate(output["response"]).model_copy(update={"request_id": budget.request_id})
++            budget.record(response.intent)
++            return response
++        except Exception as error:
++            budget.record(classify_failure(error))
++            error.supportops_request_id = budget.request_id
++            error.supportops_mode = budget.mode
++            error.supportops_llm_calls = budget.llm_calls
++            if classify_failure(error) == "step_limit" and not isinstance(error, ExecutionFailure):
++                bounded = ExecutionFailure("step_limit")
++                bounded.supportops_request_id = budget.request_id
++                bounded.supportops_mode = budget.mode
++                bounded.supportops_llm_calls = budget.llm_calls
++                raise bounded from None
++            # Internal callers keep typed/original errors; the API renders safe detail.
++            raise
+--- starter/src/supportops/main.py
++++ sample/src/supportops/main.py
+@@ -1,57 +1,114 @@
+-"""Local-only FastAPI entry point; no provider clients or external side effects."""
+-from importlib.resources import files
+-from typing import Annotated
+-from fastapi import Depends, FastAPI, HTTPException
+-from fastapi.responses import HTMLResponse
+-from starlette.middleware.trustedhost import TrustedHostMiddleware
+-from supportops.auth import require_customer
+-from supportops.config import Settings
+-from supportops.provider import MockSupportProvider, SupportProvider
+-from supportops.schemas import ChatRequest, ChatResponse, OrderView, Principal
+-
+-
+-def create_app(
+-    settings: Settings | None = None,
+-    provider: SupportProvider | None = None,
+-) -> FastAPI:
+-    config = settings or Settings.from_env()
+-    active_provider = provider or MockSupportProvider()
+-    api = FastAPI(
+-        title="SupportOps Agent — local mock foundation",
+-        version="0.1.0",
+-        description="Synthetic fixtures only. No live AI model, persistent memory, or action execution.",
+-    )
+-    api.add_middleware(
+-        TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "testserver"]
+-    )
+-
+-    @api.get("/", response_class=HTMLResponse, include_in_schema=False)
+-    def demo_page() -> str:
+-        return files("supportops").joinpath("static/index.html").read_text(encoding="utf-8")
+-
+-    @api.get("/healthz")
+-    def health() -> dict[str, str]:
+-        return {"status": "ok", "mode": config.llm_mode, "milestone": "M0", "data": "synthetic"}
+-
+-    @api.get("/v1/orders/{order_id}", response_model=OrderView)
+-    def order_lookup(
+-        order_id: str,
+-        principal: Annotated[Principal, Depends(require_customer)],
+-    ) -> OrderView:
+-        from supportops.tools import lookup_order
+-        order = lookup_order(principal, order_id.upper())
+-        if order is None:
+-            raise HTTPException(status_code=404, detail="Order not found in your account.")
+-        return order
+-
+-    @api.post("/v1/chat", response_model=ChatResponse)
+-    def chat(
+-        body: ChatRequest,
+-        principal: Annotated[Principal, Depends(require_customer)],
+-    ) -> ChatResponse:
+-        return active_provider.respond(body.message, principal)
+-
+-    return api
+-
+-
+-app = create_app()
++"""Local-only FastAPI entry point; no provider clients or external side effects."""
++from importlib.resources import files
++from typing import Annotated
++from uuid import UUID, uuid4
++from fastapi import Depends, FastAPI, HTTPException
++from fastapi.responses import HTMLResponse, JSONResponse
++from starlette.middleware.trustedhost import TrustedHostMiddleware
++from supportops.auth import require_customer
++from supportops.config import Settings
++from supportops.conversations import ConversationService, ConversationNotFound
++from supportops.graph import GraphSupportProvider
++from supportops.provider import SupportProvider, RouteProvider, MockRouteProvider
++from supportops.schemas import ChatRequest, ChatResponse, OrderView, Principal
++from supportops.schemas import ConversationCreate, ConversationView, ConversationResponse
++from supportops.execution import ExecutionBudget, classify_failure
++
++
++def create_app(
++    settings: Settings | None = None,
++    provider: SupportProvider | None = None,
++    *, route_provider: RouteProvider | None = None,
++) -> FastAPI:
++    config = settings or Settings.from_env()
++    if route_provider is None:
++        route_provider = MockRouteProvider()
++    active_provider = provider if provider is not None else GraphSupportProvider(
++        policy=config.execution, route_provider=route_provider)
++    conversations = ConversationService(config.conversation_db, policy=config.execution, route_provider=route_provider)
++
++    def failure(error: Exception) -> JSONResponse:
++        outcome = classify_failure(error)
++        return JSONResponse(status_code=504 if outcome in {"tool_timeout", "turn_timeout", "provider_timeout"} else 503,
++                            content={"detail": {"outcome": outcome,
++                                               "request_id": str(getattr(error, "supportops_request_id", uuid4())),
++                                               "mode": getattr(error, "supportops_mode", "mock"),
++                                               "llm_calls": getattr(error, "supportops_llm_calls", 0),
++                                               "action_executed": False}})
++    api = FastAPI(
++        title="SupportOps Agent — local mock foundation",
++        version="0.1.0",
++        description="Synthetic mock with owner-scoped SQLite conversations. No live AI or action execution.",
++    )
++    api.add_middleware(
++        TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "testserver"]
++    )
++
++    @api.get("/", response_class=HTMLResponse, include_in_schema=False)
++    def demo_page() -> str:
++        return files("supportops").joinpath("static/index.html").read_text(encoding="utf-8")
++
++    @api.get("/healthz")
++    def health() -> dict[str, str]:
++        return {"status": "ok", "mode": config.llm_mode, "milestone": "M0", "data": "synthetic"}
++
++    @api.get("/v1/orders/{order_id}", response_model=OrderView)
++    def order_lookup(
++        order_id: str,
++        principal: Annotated[Principal, Depends(require_customer)],
++    ) -> OrderView:
++        from supportops.tools import lookup_order
++        budget = ExecutionBudget(config.execution)
++        try:
++            order = budget.call("order_lookup", lambda: lookup_order(principal, order_id.upper()))
++            budget.record("order_status" if order else "abstain")
++        except Exception as error:
++            budget.record(classify_failure(error))
++            error.supportops_request_id = budget.request_id
++            return failure(error)
++        if order is None:
++            raise HTTPException(status_code=404, detail="Order not found in your account.")
++        return order
++
++    @api.post("/v1/chat", response_model=ChatResponse)
++    def chat(
++        body: ChatRequest,
++        principal: Annotated[Principal, Depends(require_customer)],
++    ) -> ChatResponse:
++        try:
++            return active_provider.respond(body.message, principal)
++        except Exception as error:
++            return failure(error)
++
++    @api.post("/v1/conversations", response_model=ConversationView, status_code=201)
++    def create_conversation(body: ConversationCreate,
++                            principal: Annotated[Principal, Depends(require_customer)]):
++        try:
++            return conversations.create(principal)
++        except Exception as error:
++            return failure(error)
++
++    @api.get("/v1/conversations/{conversation_id}", response_model=ConversationView)
++    def read_conversation(conversation_id: UUID,
++                          principal: Annotated[Principal, Depends(require_customer)]):
++        try:
++            return conversations.read(conversation_id, principal)
++        except ConversationNotFound:
++            raise HTTPException(404, "Conversation not found.") from None
++        except Exception as error:
++            return failure(error)
++
++    @api.post("/v1/conversations/{conversation_id}/chat", response_model=ConversationResponse)
++    def conversation_chat(conversation_id: UUID, body: ChatRequest,
++                          principal: Annotated[Principal, Depends(require_customer)]):
++        try:
++            return conversations.respond(conversation_id, body.message, principal)
++        except ConversationNotFound:
++            raise HTTPException(404, "Conversation not found.") from None
++        except Exception as error:
++            return failure(error)
++
++    return api
++
++
++app = create_app()
+--- starter/src/supportops/provider.py
++++ sample/src/supportops/provider.py
+@@ -1,64 +1,79 @@
+-"""Deterministic workflow stand-in, NOT an LLM, LangGraph, or semantic RAG.
++"""Deterministic route planning and response operations; no model calls.
+ 
+ Purpose: establish input, tool, and response contracts without API spending.
+ The message rules below are intentionally limited and must never be advertised
+ as natural-language understanding or as a prompt-injection defense.
+ """
+ import re
+-from typing import Protocol
++from pydantic import Field, model_validator
++from typing import Literal, Protocol
+ from uuid import uuid4
+-from supportops.schemas import ChatResponse, Principal, ProposedAction
++from supportops.schemas import ChatResponse, Principal, ProposedAction, StrictModel
+ from supportops.tools import lookup_order, read_policy
++from supportops.execution import ExecutionBudget
+ 
+ 
+ class SupportProvider(Protocol):
+     def respond(self, message: str, principal: Principal) -> ChatResponse: ...
+ 
+ 
++class RouteProvider(Protocol):
++    """An injected planner receives text and a server budget, never authority.
++
++    Implementations must return a RoutePlan; the graph revalidates it and invokes
++    only fixed server operations. Live implementations must cancel their own I/O.
++    """
++    def plan(self, message: str, budget: ExecutionBudget) -> "RoutePlan": ...
++
++
++Route = Literal["order_status", "policy", "review_request", "clarify", "abstain"]
++
++
++class RoutePlan(StrictModel):
++    route: Route
++    order_id: str | None = Field(default=None, pattern=r"^ORD-\d{4}$")
++    source_id: Literal["returns-v1", "shipping-v1"] | None = None
++    draft_kind: Literal["refund_review", "cancellation_review"] | None = None
++    reason: Literal["multiple_orders", "missing_order_id"] | None = None
++
++    @model_validator(mode="after")
++    def required_route_fields(self) -> "RoutePlan":
++        if self.route in {"order_status", "review_request"} and self.order_id is None:
++            raise ValueError("An order route requires an order ID")
++        if self.route == "review_request" and self.draft_kind is None:
++            raise ValueError("A draft route requires its kind")
++        if self.route == "policy" and self.source_id is None:
++            raise ValueError("A policy route requires an allowed source ID")
++        if self.route == "clarify" and self.reason is None:
++            raise ValueError("A clarification requires its reason")
++        allowed = {"order_status": {"order_id"}, "review_request": {"order_id", "draft_kind"},
++                   "policy": {"source_id"}, "clarify": {"reason"}, "abstain": set()}[self.route]
++        if any(getattr(self, key) is not None and key not in allowed
++               for key in ("order_id", "source_id", "draft_kind", "reason")):
++            raise ValueError("Arguments must belong to the selected fixed route")
++        return self
++
++
++class MockRouteProvider:
++    def plan(self, message: str, budget: ExecutionBudget) -> RoutePlan:
++        return budget.call("route_plan", lambda: MockSupportProvider().plan(message), tool=False)
++
++
+ class MockSupportProvider:
+-    def respond(self, message: str, principal: Principal) -> ChatResponse:
++    def plan(self, message: str) -> RoutePlan:
++        """Preserve M0 keyword precedence; this plan grants no authorization."""
+         text = message.lower()
+         words = set(re.findall(r"[a-z]+", text))
+         matches = list(dict.fromkeys(re.findall(r"\bORD-\d{4}\b", message.upper())))
+-        request_id = uuid4()
+-
+         if len(matches) > 1:
+-            return ChatResponse(
+-                request_id=request_id,
+-                intent="clarify",
+-                answer="Please ask about one order at a time in this local demo.",
+-            )
++            return RoutePlan(route="clarify", reason="multiple_orders")
+         if matches:
+-            order = lookup_order(principal, matches[0])
+-            if order is None:
+-                return ChatResponse(
+-                    request_id=request_id,
+-                    intent="abstain",
+-                    answer="I could not find that order in your account.",
+-                )
+             if words & {"refund", "cancel"}:
+                 kind = "refund_review" if "refund" in words else "cancellation_review"
+-                return ChatResponse(
+-                    request_id=request_id,
+-                    intent="review_request",
+-                    answer=(
+-                        "This is a review-request draft only. It has NOT been saved, "
+-                        "submitted, approved, or executed. No refund or cancellation occurred."
+-                    ),
+-                    proposed_action=ProposedAction(kind=kind, order_id=order.order_id),
+-                )
+-            return ChatResponse(
+-                request_id=request_id,
+-                intent="order_status",
+-                answer=(f"Synthetic order {order.order_id}: {order.status}. "
+-                        f"Delivery: {order.estimated_delivery}."),
+-            )
++                return RoutePlan(route="review_request", order_id=matches[0], draft_kind=kind)
++            return RoutePlan(route="order_status", order_id=matches[0])
+         if words & {"order", "tracking"}:
+-            return ChatResponse(
+-                request_id=request_id,
+-                intent="clarify",
+-                answer="Please provide an order ID such as ORD-1001. Access is checked against your demo account.",
+-            )
++            return RoutePlan(route="clarify", reason="missing_order_id")
+         source_id = None
+         if words & {"return", "returns", "refund", "refunds"}:
+             source_id = "returns-v1"
+@@ -66,16 +81,66 @@
+             # Only the generic fixture policy is returned; this makes no new promise.
+             source_id = "shipping-v1"
+         if source_id:
+-            citation = read_policy(source_id)
+-            return ChatResponse(
+-                request_id=request_id,
+-                intent="policy",
+-                answer="The fictional policy says: " + citation.quote,
+-                citations=[citation],
+-            )
++            return RoutePlan(route="policy", source_id=source_id)
++        return RoutePlan(route="abstain")
++
++    def order_status(self, plan: RoutePlan, principal: Principal) -> ChatResponse:
++        assert plan.order_id is not None  # Validated by RoutePlan.
++        order = lookup_order(principal, plan.order_id)
++        if order is None:
++            return self.missing_order()
++        return ChatResponse(request_id=uuid4(), intent="order_status",
++                            answer=(f"Synthetic order {order.order_id}: {order.status}. "
++                                    f"Delivery: {order.estimated_delivery}."))
++
++    def review_request(self, plan: RoutePlan, principal: Principal) -> ChatResponse:
++        # Even a forged plan must pass ownership inside the read-only tool.
++        assert plan.order_id is not None and plan.draft_kind is not None
++        order = lookup_order(principal, plan.order_id)
++        if order is None:
++            return self.missing_order()
+         return ChatResponse(
+-            request_id=request_id,
++            request_id=uuid4(), intent="review_request",
++            answer=("This is a review-request draft only. It has NOT been saved, "
++                    "submitted, approved, or executed. No refund or cancellation occurred."),
++            proposed_action=ProposedAction(kind=plan.draft_kind, order_id=order.order_id),
++        )
++
++    def policy(self, plan: RoutePlan) -> ChatResponse:
++        assert plan.source_id is not None
++        citation = read_policy(plan.source_id)
++        return ChatResponse(request_id=uuid4(), intent="policy",
++                            answer="The fictional policy says: " + citation.quote,
++                            citations=[citation])
++
++    def clarify(self, plan: RoutePlan) -> ChatResponse:
++        answer = ("Please ask about one order at a time in this local demo."
++                  if plan.reason == "multiple_orders" else
++                  "Please provide an order ID such as ORD-1001. Access is checked against your demo account.")
++        return ChatResponse(request_id=uuid4(), intent="clarify", answer=answer)
++
++    def abstain(self, plan: RoutePlan) -> ChatResponse:
++        return ChatResponse(
++            request_id=uuid4(),
+             intent="abstain",
+             answer=("This limited mock demo has no verified answer to that question. "
+                     "Human escalation will be implemented in a later milestone."),
+         )
++
++    @staticmethod
++    def missing_order() -> ChatResponse:
++        return ChatResponse(request_id=uuid4(), intent="abstain",
++                            answer="I could not find that order in your account.")
++
++    def respond(self, message: str, principal: Principal) -> ChatResponse:
++        """Retain the provider seam for injected/mock callers; API uses the graph."""
++        plan = self.plan(message)
++        if plan.route == "order_status":
++            return self.order_status(plan, principal)
++        if plan.route == "review_request":
++            return self.review_request(plan, principal)
++        if plan.route == "policy":
++            return self.policy(plan)
++        if plan.route == "clarify":
++            return self.clarify(plan)
++        return self.abstain(plan)
+--- starter/src/supportops/schemas.py
++++ sample/src/supportops/schemas.py
+@@ -1,54 +1,67 @@
+-"""Public contracts; authorization context is never accepted in the request body."""
+-from typing import Literal
+-from uuid import UUID
+-from pydantic import BaseModel, ConfigDict, Field, field_validator
+-
+-
+-class StrictModel(BaseModel):
+-    model_config = ConfigDict(extra="forbid", frozen=True)
+-
+-
+-class Principal(StrictModel):
+-    customer_id: str
+-
+-
+-class ChatRequest(StrictModel):
+-    message: str = Field(min_length=1, max_length=2000, strict=True)
+-
+-    @field_validator("message")
+-    @classmethod
+-    def nonblank_message(cls, value: str) -> str:
+-        clean = value.strip()
+-        if not clean:
+-            raise ValueError("Message cannot be blank.")
+-        return clean
+-
+-
+-class Citation(StrictModel):
+-    source_id: str
+-    title: str
+-    quote: str
+-
+-
+-class OrderView(StrictModel):
+-    order_id: str
+-    status: str
+-    estimated_delivery: str
+-    synthetic: Literal[True] = True
+-
+-
+-class ProposedAction(StrictModel):
+-    kind: Literal["refund_review", "cancellation_review"]
+-    order_id: str
+-    status: Literal["draft_only_not_saved"] = "draft_only_not_saved"
+-
+-
+-class ChatResponse(StrictModel):
+-    request_id: UUID
+-    mode: Literal["mock"] = "mock"
+-    intent: Literal["order_status", "policy", "review_request", "clarify", "abstain"]
+-    answer: str
+-    citations: list[Citation] = Field(default_factory=list)
+-    proposed_action: ProposedAction | None = None
+-    action_executed: Literal[False] = False
+-    llm_calls: Literal[0] = 0
++"""Public contracts; authorization context is never accepted in the request body."""
++from typing import Literal
++from uuid import UUID
++from pydantic import BaseModel, ConfigDict, Field, field_validator
++
++
++class StrictModel(BaseModel):
++    model_config = ConfigDict(extra="forbid", frozen=True)
++
++
++class Principal(StrictModel):
++    customer_id: str
++
++
++class ChatRequest(StrictModel):
++    message: str = Field(min_length=1, max_length=2000, strict=True)
++
++    @field_validator("message")
++    @classmethod
++    def nonblank_message(cls, value: str) -> str:
++        clean = value.strip()
++        if not clean:
++            raise ValueError("Message cannot be blank.")
++        return clean
++
++
++class Citation(StrictModel):
++    source_id: str
++    title: str
++    quote: str
++
++
++class OrderView(StrictModel):
++    order_id: str
++    status: str
++    estimated_delivery: str
++    synthetic: Literal[True] = True
++
++
++class ProposedAction(StrictModel):
++    kind: Literal["refund_review", "cancellation_review"]
++    order_id: str
++    status: Literal["draft_only_not_saved"] = "draft_only_not_saved"
++
++
++class ChatResponse(StrictModel):
++    request_id: UUID
++    mode: Literal["mock"] = "mock"
++    intent: Literal["order_status", "policy", "review_request", "clarify", "abstain"]
++    answer: str
++    citations: list[Citation] = Field(default_factory=list)
++    proposed_action: ProposedAction | None = None
++    action_executed: Literal[False] = False
++    llm_calls: Literal[0] = 0
++
++
++class ConversationCreate(StrictModel):
++    """No client-supplied identity, UUID, or graph configuration."""
++
++
++class ConversationView(StrictModel):
++    conversation_id: UUID
++    turn_count: int
++
++
++class ConversationResponse(ConversationView):
++    response: ChatResponse
+--- starter/tests/conftest.py
++++ sample/tests/conftest.py
+@@ -1,3 +1,4 @@
++import asyncio
+ import socket
+ import pytest
+ from fastapi.testclient import TestClient
+@@ -5,8 +6,18 @@
+ from supportops.main import create_app
+ 
+ 
++@pytest.fixture
++def test_event_loop():
++    # Windows creates its internal socketpair using a loopback connect. Create
++    # that infrastructure before forbidding every application connect call.
++    loop = asyncio.new_event_loop()
++    yield loop
++    if not loop.is_closed():
++        loop.close()
++
++
+ @pytest.fixture(autouse=True)
+-def forbid_network(monkeypatch):
++def forbid_network(monkeypatch, test_event_loop):
+     def blocked(*args, **kwargs):
+         raise AssertionError("Network calls are forbidden in the local mock test suite.")
+     monkeypatch.setattr(socket, "create_connection", blocked)
+@@ -14,8 +25,10 @@
+ 
+ 
+ @pytest.fixture
+-def client():
+-    with TestClient(create_app(Settings())) as test_client:
++def client(test_event_loop):
++    with TestClient(create_app(Settings()), backend_options={
++        "loop_factory": lambda: test_event_loop,
++    }) as test_client:
+         yield test_client
+ 
+ 
+--- starter/tests/test_conversations.py
++++ sample/tests/test_conversations.py
+@@ -0,0 +1,249 @@
++"""S02 owner, persistence, atomicity, and independent-process acceptance."""
++from concurrent.futures import ThreadPoolExecutor
++import json
++from pathlib import Path
++import sqlite3
++import subprocess
++import sys
++from uuid import UUID, uuid4
++
++from fastapi.testclient import TestClient
++import pytest
++
++from supportops.config import Settings
++from supportops.conversations import ConversationService, OwnedSqliteSaver, ConversationNotFound, JsonStateSerializer
++from supportops.main import create_app
++from supportops.schemas import Principal
++
++A = Principal(customer_id="cust_demo_a")
++B = Principal(customer_id="cust_demo_b")
++
++
++@pytest.fixture
++def service(tmp_path):
++    return ConversationService(tmp_path / "conversations.sqlite3")
++
++
++@pytest.fixture
++def conversation_client(tmp_path, test_event_loop):
++    with TestClient(create_app(Settings(conversation_db=tmp_path / "api.sqlite3")),
++                    backend_options={"loop_factory": lambda: test_event_loop}) as client:
++        yield client
++
++
++def test_create_server_uuid_and_no_owner_disclosure(conversation_client, auth_a):
++    first = conversation_client.post("/v1/conversations", json={}, headers=auth_a)
++    second = conversation_client.post("/v1/conversations", json={}, headers=auth_a)
++    assert first.status_code == second.status_code == 201
++    assert UUID(first.json()["conversation_id"]).version == 4
++    assert first.json()["conversation_id"] != second.json()["conversation_id"]
++    assert set(first.json()) == {"conversation_id", "turn_count"}
++    assert first.json()["turn_count"] == 0
++
++
++@pytest.mark.parametrize("field", ["customer_id", "owner_id", "conversation_id", "thread_id", "checkpoint_id", "principal"])
++def test_create_rejects_forged_fields(conversation_client, auth_a, field):
++    assert conversation_client.post("/v1/conversations", json={field: "forged"}, headers=auth_a).status_code == 422
++
++
++@pytest.mark.parametrize("method,suffix", [("get", ""), ("post", "/chat")])
++@pytest.mark.parametrize("owner,foreign", [("auth_a", "auth_b"), ("auth_b", "auth_a")])
++def test_foreign_unknown_same_no_checkpoint_access(conversation_client, request, monkeypatch, method, suffix, owner, foreign):
++    headers = request.getfixturevalue(owner)
++    attacker = request.getfixturevalue(foreign)
++    cid = conversation_client.post("/v1/conversations", json={}, headers=headers).json()["conversation_id"]
++    def forbidden(*args, **kwargs):
++        raise AssertionError("Unauthorized request reached checkpoint saver")
++    monkeypatch.setattr(OwnedSqliteSaver, "__init__", forbidden)
++    kwargs = {"headers": attacker}
++    if method == "post":
++        kwargs["json"] = {"message": "Where is it?"}
++    results = [getattr(conversation_client, method)(f"/v1/conversations/{value}{suffix}", **kwargs)
++               for value in (cid, str(uuid4()))]
++    assert [(r.status_code, r.json()) for r in results] == [(404, {"detail": "Conversation not found."})] * 2
++
++
++@pytest.mark.parametrize("method,suffix", [("get", ""), ("post", "/chat")])
++def test_malformed_id_rejected(conversation_client, auth_a, method, suffix):
++    kwargs = {"headers": auth_a}
++    if method == "post":
++        kwargs["json"] = {"message": "where is it"}
++    assert getattr(conversation_client, method)(f"/v1/conversations/not-a-uuid{suffix}", **kwargs).status_code == 422
++
++
++def test_auth_required_and_turn_fields_rejected(conversation_client, auth_a):
++    assert conversation_client.post("/v1/conversations", json={}).status_code == 401
++    cid = conversation_client.post("/v1/conversations", json={}, headers=auth_a).json()["conversation_id"]
++    assert conversation_client.get(f"/v1/conversations/{cid}").status_code == 401
++    assert conversation_client.post(f"/v1/conversations/{cid}/chat", json={"message": "Hi"}).status_code == 401
++    for field in ("customer_id", "last_order", "plan", "thread_id", "checkpoint_id"):
++        assert conversation_client.post(f"/v1/conversations/{cid}/chat", headers=auth_a,
++                                        json={"message": "Hi", field: "forged"}).status_code == 422
++
++
++def test_api_continue_and_metadata(conversation_client, auth_a):
++    cid = conversation_client.post("/v1/conversations", json={}, headers=auth_a).json()["conversation_id"]
++    for count, message in enumerate(("Where is ORD-1001?", "And when will it arrive?"), 1):
++        result = conversation_client.post(f"/v1/conversations/{cid}/chat", headers=auth_a, json={"message": message})
++        assert result.status_code == 200
++        assert result.json()["turn_count"] == count
++        assert "ORD-1001" in result.json()["response"]["answer"]
++        assert result.json()["response"]["llm_calls"] == 0
++    assert conversation_client.get(f"/v1/conversations/{cid}", headers=auth_a).json()["turn_count"] == 2
++
++
++@pytest.mark.parametrize("principal,owned,foreign", [(A, "ORD-1001", "ORD-2001"), (B, "ORD-2001", "ORD-1001")])
++@pytest.mark.parametrize("attempt", ["Where is {foreign}?", "Refund {foreign}", "Where is ORD-9999?"])
++def test_denied_order_cannot_be_followup_memory(service, principal, owned, foreign, attempt):
++    cid = service.create(principal).conversation_id
++    service.respond(cid, owned, principal)
++    denied = service.respond(cid, attempt.format(foreign=foreign), principal).response
++    assert denied.intent == "abstain"
++    followup = service.respond(cid, "And when will it arrive?", principal).response
++    assert followup.intent == "clarify"
++    assert foreign not in followup.answer
++    assert followup.proposed_action is None
++
++
++def test_policy_separate_and_same_customer_conversations_isolated(service):
++    first, second = [service.create(A).conversation_id for _ in range(2)]
++    service.respond(first, "ORD-1001", A)
++    policy = service.respond(first, "return policy", A).response
++    assert policy.intent == "policy" and policy.citations
++    assert service.respond(first, "where is it?", A).response.intent == "order_status"
++    assert service.respond(second, "where is it?", A).response.intent == "clarify"
++    with sqlite3.connect(service.database) as conn:
++        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
++        assert tables == {"conversations", "checkpoints", "writes"}
++        assert conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] > 0
++        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
++
++
++def test_followup_rechecks_current_order_owner(service, monkeypatch):
++    cid = service.create(A).conversation_id
++    service.respond(cid, "ORD-1001", A)
++    monkeypatch.setattr("supportops.graph.lookup_order", lambda *args: None)
++    assert service.respond(cid, "where is it?", A).response.intent == "clarify"
++
++
++def test_direct_service_foreign_cannot_modify(service):
++    cid = service.create(B).conversation_id
++    service.respond(cid, "ORD-2001", B)
++    with pytest.raises(ConversationNotFound):
++        service.respond(cid, "ORD-1001", A)
++    with pytest.raises(ConversationNotFound):
++        service.read(cid, A)
++    assert service.read(cid, B).turn_count == 1
++    assert "ORD-2001" in service.respond(cid, "where is it?", B).response.answer
++
++
++def test_failed_turn_rolls_back_checkpoints_and_count(service, monkeypatch):
++    cid = service.create(A).conversation_id
++    service.respond(cid, "ORD-1001", A)
++    with sqlite3.connect(service.database) as conn:
++        before = conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0]
++    def fail(*args):
++        raise RuntimeError("Synthetic failure")
++    monkeypatch.setattr("supportops.provider.MockSupportProvider.order_status", fail)
++    with pytest.raises(RuntimeError, match="Synthetic failure"):
++        service.respond(cid, "ORD-1002", A)
++    with sqlite3.connect(service.database) as conn:
++        assert conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == before
++    assert service.read(cid, A).turn_count == 1
++
++
++def test_concurrent_turns_serialize_without_lost_updates(service):
++    cid = service.create(A).conversation_id
++    with ThreadPoolExecutor(max_workers=3) as pool:
++        results = list(pool.map(lambda _: service.respond(cid, "ORD-1001", A), range(6)))
++    assert sorted(r.turn_count for r in results) == list(range(1, 7))
++    assert service.read(cid, A).turn_count == 6
++
++
++def test_schema_owner_immutable_unknown_version_rejected(service):
++    service.create(A)
++    with sqlite3.connect(service.database) as conn:
++        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
++            conn.execute("UPDATE conversations SET owner_id = 'cust_demo_b'")
++        conn.execute("PRAGMA user_version = 99")
++    with pytest.raises(ValueError, match="schema version"):
++        service.create(A)
++
++
++def test_data_only_serializer_rejects_object_encoding():
++    with pytest.raises(ValueError):
++        JsonStateSerializer().loads_typed(("pickle", b"malicious"))
++
++
++def test_saver_guard_checks_owner_and_thread_before_io(service):
++    owned = service.create(A).conversation_id
++    foreign = service.create(B).conversation_id
++    with service.connection() as conn:
++        saver = OwnedSqliteSaver(conn, str(owned), A)
++        with pytest.raises(ConversationNotFound):
++            saver.get_tuple({"configurable": {"thread_id": str(foreign)}})
++        saver = OwnedSqliteSaver(conn, str(foreign), A)
++        with pytest.raises(ConversationNotFound):
++            saver.get_tuple({"configurable": {"thread_id": str(foreign)}})
++        with pytest.raises(ConversationNotFound):
++            saver.put({"configurable": {"thread_id": str(owned)}}, {}, {}, {})
++        with pytest.raises(ConversationNotFound):
++            saver.put({"configurable": {"thread_id": str(foreign)}}, {}, {}, {})
++
++
++def test_checkpoint_memory_is_not_authority_and_identity_not_persisted(service):
++    cid = service.create(A).conversation_id
++    service.respond(cid, "ORD-1001", A)
++    with sqlite3.connect(service.database) as conn:
++        rows = conn.execute("SELECT checkpoint_id, checkpoint FROM checkpoints WHERE thread_id=? ORDER BY checkpoint_id DESC",
++                            (str(cid),)).fetchall()
++        assert rows
++        for _, payload in rows:
++            assert b"cust_demo_a" not in payload and b"principal" not in payload
++        checkpoint = json.loads(rows[0][1])
++        checkpoint["channel_values"]["last_order"] = "ORD-2001"
++        conn.execute("UPDATE checkpoints SET checkpoint=? WHERE checkpoint_id=? AND thread_id=?",
++                     (json.dumps(checkpoint).encode(), rows[0][0], str(cid)))
++    result = service.respond(cid, "where is it?", A).response
++    assert result.intent == "clarify"
++    assert "ORD-2001" not in result.answer
++
++
++def test_concurrent_customers_keep_independent_memory(service):
++    ca, cb = service.create(A).conversation_id, service.create(B).conversation_id
++    def turn(args):
++        cid, principal, order = args
++        service.respond(cid, order, principal)
++        return service.respond(cid, "where is it?", principal).response
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        ra, rb = pool.map(turn, [(ca, A, "ORD-1001"), (cb, B, "ORD-2001")])
++    assert "ORD-1001" in ra.answer and "ORD-2001" not in ra.answer
++    assert "ORD-2001" in rb.answer and "ORD-1001" not in rb.answer
++
++
++def test_persistent_tracing_disabled(service, monkeypatch):
++    monkeypatch.setenv("LANGSMITH_TRACING", "true")
++    monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
++    def forbidden(*args, **kwargs):
++        raise AssertionError("Remote tracing client created")
++    monkeypatch.setattr("langsmith.Client.__init__", forbidden)
++    cid = service.create(A).conversation_id
++    assert service.respond(cid, "ORD-1001", A).response.llm_calls == 0
++
++
++def test_fresh_process_application_continuity(tmp_path):
++    """Two terminated independent interpreters, not just two app instances."""
++    script = Path(__file__).parents[1] / "scripts" / "conversation_process_probe.py"
++    database = tmp_path / "restart.sqlite3"
++    def run(*args):
++        result = subprocess.run([sys.executable, str(script), str(database), *args],
++                                capture_output=True, text=True, timeout=30)
++        assert result.returncode == 0, result.stderr
++        return json.loads(result.stdout)
++    first = run("create")
++    second = run("continue", first["conversation_id"])
++    assert first["pid"] != second["pid"]
++    assert second["response"]["intent"] == "order_status"
++    assert "ORD-1001" in second["response"]["answer"]
++    assert second["turn_count"] == 2
++    assert second["foreign_status"] == 404
+--- starter/tests/test_execution.py
++++ sample/tests/test_execution.py
+@@ -0,0 +1,235 @@
++"""S03 deterministic budget/failure tests, no external I/O or paid calls."""
++import json
++import logging
++from threading import Event
++from time import monotonic
++from uuid import UUID
++
++from fastapi.testclient import TestClient
++from langgraph.graph import StateGraph, START
++import pytest
++
++from supportops.config import Settings
++from supportops.conversations import ConversationService
++from supportops.execution import ExecutionBudget, ExecutionPolicy, ExecutionFailure, ReadOnlyRunner
++from supportops.graph import GraphSupportProvider
++from supportops.main import create_app
++from supportops.provider import MockSupportProvider
++from supportops.schemas import Principal
++
++A = Principal(customer_id="cust_demo_a")
++
++
++class FakeClock:
++    def __init__(self):
++        self.now = 0.0
++    def __call__(self):
++        return self.now
++    def advance(self, seconds):
++        self.now += seconds
++
++
++@pytest.mark.parametrize("kwargs", [{"max_steps": 0}, {"max_steps": 33}, {"max_tools": True},
++                                     {"max_requests": -1}, {"tool_seconds": 0},
++                                     {"turn_seconds": 21}, {"turn_seconds": float("nan")}])
++def test_invalid_limits_fail_closed(kwargs):
++    with pytest.raises(ValueError):
++        ExecutionPolicy(**kwargs)
++
++
++@pytest.mark.parametrize("limit,outcome", [("max_steps", "step_limit"),
++                                          ("max_requests", "request_limit"), ("max_tools", "tool_limit")])
++def test_counters_prevent_next_operation(limit, outcome):
++    budget = ExecutionBudget(ExecutionPolicy(**{limit: 1}), runner=ReadOnlyRunner())
++    calls = []
++    with pytest.raises(ExecutionFailure) as failure:
++        if limit == "max_steps":
++            budget.step()
++            budget.step()
++        else:
++            budget.call("policy", lambda: calls.append(1) or "ok")
++            budget.call("policy", lambda: calls.append(2) or "ok")
++    assert failure.value.outcome == outcome
++    assert calls == ([] if limit == "max_steps" else [1])
++
++
++@pytest.mark.parametrize("seconds,tool_seconds,turn_seconds,outcome", [
++    (2, 1, 20, "tool_timeout"), (20, 2, 20, "turn_timeout"), (1, 1, 20, "tool_timeout")])
++def test_fake_clock_deadline_boundaries(seconds, tool_seconds, turn_seconds, outcome):
++    clock = FakeClock()
++    budget = ExecutionBudget(ExecutionPolicy(tool_seconds=tool_seconds, turn_seconds=turn_seconds), clock=clock)
++    def slow():
++        clock.advance(seconds)
++        return "ok"
++    with pytest.raises(ExecutionFailure) as failure:
++        budget.call("policy", slow)
++    assert failure.value.outcome == outcome
++
++
++def test_no_dispatch_after_turn_expired():
++    clock = FakeClock()
++    budget = ExecutionBudget(clock=clock)
++    clock.advance(20)
++    with pytest.raises(ExecutionFailure, match="turn_timeout"):
++        budget.call("policy", lambda: pytest.fail("expired operation dispatched"))
++
++
++def test_real_slow_worker_timeout_capacity_and_cleanup():
++    entered, release, exited = Event(), Event(), Event()
++    runner = ReadOnlyRunner(capacity=1)
++    budget = ExecutionBudget(ExecutionPolicy(tool_seconds=.05), runner=runner)
++    def blocking_read():
++        entered.set()
++        try:
++            release.wait(5)  # Bounded test cleanup, not an indefinitely hanging test.
++            return "late result"
++        finally:
++            exited.set()
++    started = monotonic()
++    try:
++        with pytest.raises(ExecutionFailure, match="tool_timeout"):
++            budget.call("policy", blocking_read)
++        assert entered.is_set() and monotonic() - started < 1
++        assert not exited.is_set()  # Timeout does NOT claim the worker was killed.
++        with pytest.raises(ExecutionFailure, match="capacity_exhausted"):
++            runner.run(lambda: pytest.fail("exhausted runner dispatched"), .05)
++    finally:
++        release.set()
++        assert exited.wait(1)
++    assert runner.slots.acquire(timeout=1)
++    runner.slots.release()
++    assert runner.run(lambda: "recovered", 1) == "recovered"
++
++
++def test_loop_hits_actual_langgraph_recursion_limit():
++    provider = GraphSupportProvider(policy=ExecutionPolicy(max_steps=3))
++    calls = []
++    builder = StateGraph(dict)
++    builder.add_node("loop", lambda state: calls.append(1) or state)
++    builder.add_edge(START, "loop")
++    builder.add_edge("loop", "loop")
++    provider.graph = builder.compile()
++    with pytest.raises(ExecutionFailure, match="step_limit") as failure:
++        provider.respond("hello", A)
++    assert failure.value.outcome == "step_limit"
++    assert len(calls) == 3
++
++
++@pytest.mark.parametrize("kind,outcome", [("fail", "tool_failure"), ("malformed", "malformed_output"),
++                                         ("noop", "no_op"), ("timeout", "tool_timeout")])
++def test_api_explicit_safe_failure(kind, outcome, test_event_loop):
++    class Broken(MockSupportProvider):
++        def order_status(self, plan, principal):
++            if kind == "fail":
++                raise RuntimeError("secret-token raw message hidden reasoning")
++            if kind == "timeout":
++                raise TimeoutError("private provider trace")
++            if kind == "malformed":
++                return {"intent": "shell", "answer": "secret"}
++            return None
++    provider = GraphSupportProvider(Broken())
++    with TestClient(create_app(provider=provider), backend_options={"loop_factory": lambda: test_event_loop}) as client:
++        result = client.post("/v1/chat", json={"message": "ORD-1001"},
++                             headers={"Authorization": "Bearer demo-customer-a"})
++    assert result.status_code == (504 if kind == "timeout" else 503)
++    detail = result.json()["detail"]
++    assert detail["outcome"] == outcome
++    assert UUID(detail["request_id"])
++    assert detail["mode"] == "mock" and detail["llm_calls"] == 0 and detail["action_executed"] is False
++    assert "secret" not in result.text and "private" not in result.text
++
++
++def test_logs_correlate_without_untrusted_data(caplog):
++    caplog.set_level(logging.INFO, logger="supportops.execution")
++    provider = GraphSupportProvider()
++    response = provider.respond("Return policy? secret-token hidden reasoning", A)
++    records = [json.loads(r.message) for r in caplog.records if r.name == "supportops.execution"]
++    assert len(records) == 1
++    assert records[0]["request_id"] == str(response.request_id)
++    assert records[0]["outcome"] == "policy" and records[0]["steps"] == 3
++    assert set(records[0]) == {"request_id", "mode", "outcome", "operation", "steps", "requests",
++                               "tools", "elapsed_ms", "llm_calls", "retries"}
++    assert "secret-token" not in caplog.text and "hidden reasoning" not in caplog.text
++    assert "cust_demo_a" not in caplog.text and "Return policy" not in caplog.text
++
++
++@pytest.mark.parametrize("limit,outcome", [("max_steps", "step_limit"), ("max_requests", "request_limit"),
++                                          ("max_tools", "tool_limit")])
++def test_persistent_budget_failure_rollback_recovery(tmp_path, limit, outcome):
++    db = tmp_path / "rollback.sqlite3"
++    normal = ConversationService(db)
++    cid = normal.create(A).conversation_id
++    normal.respond(cid, "ORD-1001", A)
++    restricted = ConversationService(db, policy=ExecutionPolicy(**{limit: 1}))
++    with pytest.raises(ExecutionFailure, match=outcome):
++        restricted.respond(cid, "where is it?", A)
++    assert normal.read(cid, A).turn_count == 1
++    response = normal.respond(cid, "where is it?", A)
++    assert response.turn_count == 2 and "ORD-1001" in response.response.answer
++
++
++def test_fake_timeout_persistent_rollback_and_recovery(tmp_path, monkeypatch):
++    db = tmp_path / "late.sqlite3"
++    normal = ConversationService(db)
++    cid = normal.create(A).conversation_id
++    normal.respond(cid, "ORD-1001", A)
++    clock = FakeClock()
++    limited = ConversationService(db, budget_factory=lambda policy: ExecutionBudget(policy, clock=clock))
++    original = MockSupportProvider.order_status
++    def delayed(self, plan, principal):
++        clock.advance(21)
++        return original(self, plan, principal)
++    with monkeypatch.context() as patch:
++        patch.setattr(MockSupportProvider, "order_status", delayed)
++        with pytest.raises(ExecutionFailure, match="turn_timeout"):
++            limited.respond(cid, "ORD-1002", A)
++    assert normal.read(cid, A).turn_count == 1
++    assert "ORD-1001" in normal.respond(cid, "where is it?", A).response.answer
++
++
++def test_real_timeout_persistent_late_result_discarded(tmp_path, monkeypatch):
++    db = tmp_path / "real-timeout.sqlite3"
++    normal = ConversationService(db)
++    cid = normal.create(A).conversation_id
++    normal.respond(cid, "ORD-1001", A)
++    runner = ReadOnlyRunner(capacity=1)
++    limited = ConversationService(db, policy=ExecutionPolicy(tool_seconds=.05),
++                                  budget_factory=lambda policy: ExecutionBudget(policy, runner=runner))
++    entered, release, exited = Event(), Event(), Event()
++    original = MockSupportProvider.order_status
++    def blocked(self, plan, principal):
++        entered.set()
++        try:
++            release.wait(5)
++            return original(self, plan, principal)
++        finally:
++            exited.set()
++    try:
++        with monkeypatch.context() as patch:
++            patch.setattr(MockSupportProvider, "order_status", blocked)
++            with pytest.raises(ExecutionFailure, match="tool_timeout"):
++                limited.respond(cid, "ORD-1002", A)
++        assert entered.is_set() and not exited.is_set()
++        assert normal.read(cid, A).turn_count == 1
++    finally:
++        release.set()
++        assert exited.wait(1)
++    assert runner.slots.acquire(timeout=1)
++    runner.slots.release()
++    assert normal.read(cid, A).turn_count == 1
++    assert "ORD-1001" in normal.respond(cid, "where is it?", A).response.answer
++
++
++def test_api_persistent_failure_with_foreign_denial(tmp_path, test_event_loop):
++    db = tmp_path / "api.sqlite3"
++    service = ConversationService(db)
++    cid = service.create(A).conversation_id
++    service.respond(cid, "ORD-1001", A)
++    with TestClient(create_app(Settings(conversation_db=db, execution=ExecutionPolicy(max_steps=1))),
++                    backend_options={"loop_factory": lambda: test_event_loop}) as client:
++        path = f"/v1/conversations/{cid}/chat"
++        failure = client.post(path, json={"message": "where is it?"}, headers={"Authorization": "Bearer demo-customer-a"})
++        foreign = client.post(path, json={"message": "where is it?"}, headers={"Authorization": "Bearer demo-customer-b"})
++    assert failure.status_code == 503 and failure.json()["detail"]["outcome"] == "step_limit"
++    assert foreign.status_code == 404 and foreign.json() == {"detail": "Conversation not found."}
++    assert service.read(cid, A).turn_count == 1
+--- starter/tests/test_graph.py
++++ sample/tests/test_graph.py
+@@ -0,0 +1,169 @@
++"""S01 acceptance: actual node execution, immutable identity and M0 contracts."""
++from dataclasses import FrozenInstanceError
++from concurrent.futures import ThreadPoolExecutor
++
++from langgraph.graph.state import CompiledStateGraph
++import langsmith
++from pydantic import ValidationError
++import pytest
++
++from supportops.graph import GraphSupportProvider, SupportContext, build_support_graph
++from supportops.provider import MockSupportProvider, RoutePlan
++from supportops.schemas import ChatResponse, Principal
++
++PRINCIPAL_A = Principal(customer_id="cust_demo_a")
++PRINCIPAL_B = Principal(customer_id="cust_demo_b")
++
++
++@pytest.mark.parametrize("message,node,intent", [
++    ("Where is ORD-1001?", "order_status", "order_status"),
++    ("where is ord-1001?", "order_status", "order_status"),
++    ("What is your return policy?", "policy", "policy"),
++    ("What is the shipping policy?", "policy", "policy"),
++    ("Please refund ORD-1001", "review_request", "review_request"),
++    ("Cancel ORD-1001", "review_request", "review_request"),
++    ("Where is my order?", "clarify", "clarify"),
++    ("Compare ORD-1001 and ORD-2001", "clarify", "clarify"),
++    ("Can you repair my laptop?", "abstain", "abstain"),
++    ("Where is ORD-2001?", "order_status", "abstain"),
++    ("Refund ORD-2001", "review_request", "abstain"),
++])
++def test_actual_graph_executes_only_selected_route(message, node, intent):
++    graph = build_support_graph()
++    assert isinstance(graph, CompiledStateGraph)
++    with langsmith.tracing_context(enabled=False):
++        updates = list(graph.stream({"message": message}, context=SupportContext(PRINCIPAL_A),
++                                    stream_mode="updates"))
++    assert [name for update in updates for name in update] == ["route", node, "finish"]
++    response = updates[-1]["finish"]["response"]
++    assert isinstance(response, ChatResponse)
++    assert response.intent == intent
++    assert response.llm_calls == 0 and response.action_executed is False
++    assert graph.checkpointer is None
++
++
++@pytest.mark.parametrize("customer_id", ["cust_demo_a", "cust_demo_b"])
++def test_graph_input_cannot_supply_principal_or_plan(customer_id):
++    graph = build_support_graph()
++    with langsmith.tracing_context(enabled=False):
++        result = graph.invoke({
++            "message": "Where is ORD-2001?",
++            "customer_id": customer_id,
++            "principal": PRINCIPAL_B,
++            "plan": {"route": "policy", "source_id": "returns-v1"},
++            "response": {"intent": "order_status", "answer": "delivered"},
++        }, context=SupportContext(PRINCIPAL_A))
++    assert set(result) == {"response"}
++    assert result["response"].intent == "abstain"
++    assert "delivered" not in result["response"].answer
++
++
++def test_runtime_context_and_principal_are_immutable():
++    context = SupportContext(PRINCIPAL_A)
++    with pytest.raises(FrozenInstanceError):
++        context.principal = PRINCIPAL_B
++    with pytest.raises(ValidationError):
++        context.principal.customer_id = "cust_demo_b"
++
++
++@pytest.mark.parametrize("route,extra", [
++    ("order_status", {}),
++    ("review_request", {"draft_kind": "refund_review"}),
++])
++def test_forged_route_plan_does_not_authorize_foreign_order(route, extra):
++    class ForgedPlanner(MockSupportProvider):
++        def plan(self, message):
++            return RoutePlan(route=route, order_id="ORD-2001", **extra)
++
++    response = GraphSupportProvider(ForgedPlanner()).respond("Hello", PRINCIPAL_A)
++    assert response.intent == "abstain"
++    assert response.proposed_action is None
++    assert "delivered" not in response.answer
++
++
++def test_planner_cannot_add_an_identity_field():
++    with pytest.raises(ValidationError):
++        RoutePlan(route="abstain", customer_id="cust_demo_b")
++
++
++@pytest.mark.parametrize("body", [
++    {"customer_id": "cust_demo_b"},
++    {"principal": {"customer_id": "cust_demo_b"}},
++    {"context": {"principal": {"customer_id": "cust_demo_b"}}},
++    {"plan": {"route": "order_status", "order_id": "ORD-2001"}},
++])
++def test_api_rejects_graph_context_fields(client, auth_a, body):
++    response = client.post("/v1/chat", headers=auth_a,
++                           json={"message": "Where is ORD-2001?", **body})
++    assert response.status_code == 422
++
++
++def test_shared_graph_does_not_retain_previous_customer():
++    provider = GraphSupportProvider()
++    assert provider.respond("Where is ORD-2001?", PRINCIPAL_B).intent == "order_status"
++    assert provider.respond("Where is ORD-2001?", PRINCIPAL_A).intent == "abstain"
++    assert provider.respond("Where is ORD-1001?", PRINCIPAL_A).intent == "order_status"
++    assert provider.respond("Where is ORD-1001?", PRINCIPAL_B).intent == "abstain"
++
++
++@pytest.mark.parametrize("message", ["Where is ORD-1001?", "Return policy?", "Refund ORD-1001",
++                                    "Where is my order?", "Repair my laptop"])
++def test_response_is_deterministic_except_request_id(message):
++    provider = GraphSupportProvider()
++    first = provider.respond(message, PRINCIPAL_A)
++    second = provider.respond(message, PRINCIPAL_A)
++    assert first.request_id != second.request_id
++    assert first.model_dump(exclude={"request_id"}) == second.model_dump(exclude={"request_id"})
++
++
++def test_concurrent_graph_invocations_keep_separate_principals():
++    provider = GraphSupportProvider()
++    principals = [PRINCIPAL_A, PRINCIPAL_B] * 8
++    with ThreadPoolExecutor(max_workers=4) as workers:
++        responses = list(workers.map(
++            lambda principal: provider.respond("Where is ORD-2001?", principal), principals))
++    assert [response.intent for response in responses] == ["abstain", "order_status"] * 8
++
++
++def test_api_default_calls_compiled_graph(client, auth_a, monkeypatch):
++    original = CompiledStateGraph.invoke
++    calls = []
++
++    def invoke(self, *args, **kwargs):
++        calls.append(kwargs["context"].principal)
++        return original(self, *args, **kwargs)
++
++    monkeypatch.setattr(CompiledStateGraph, "invoke", invoke)
++    assert client.post("/v1/chat", headers=auth_a,
++                       json={"message": "Where is ORD-1001?"}).status_code == 200
++    assert calls == [PRINCIPAL_A]
++
++
++def test_graph_operations_do_not_call_legacy_dispatcher():
++    class OperationsOnly(MockSupportProvider):
++        def respond(self, message, principal):
++            pytest.fail("The graph must execute its own selected operation node")
++
++    assert GraphSupportProvider(OperationsOnly()).respond("Where is ORD-1001?", PRINCIPAL_A).intent == "order_status"
++
++
++def test_inherited_remote_tracing_is_disabled(monkeypatch):
++    monkeypatch.setenv("LANGSMITH_TRACING", "true")
++    monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
++
++    def forbidden_client(*args, **kwargs):
++        pytest.fail("Offline mock must not construct a remote tracing client")
++
++    monkeypatch.setattr(langsmith.Client, "__init__", forbidden_client)
++    assert GraphSupportProvider().respond("Hello", PRINCIPAL_A).intent == "abstain"
++
++
++@pytest.mark.parametrize("plan", [
++    {"route": "shell"},
++    {"route": "order_status"},
++    {"route": "review_request", "order_id": "ORD-1001"},
++    {"route": "policy", "source_id": "https://example.com"},
++])
++def test_route_plan_validates_allowed_operations(plan):
++    with pytest.raises(ValidationError):
++        RoutePlan.model_validate(plan)
+--- starter/tests/test_network_guard.py
++++ sample/tests/test_network_guard.py
+@@ -0,0 +1,15 @@
++"""The Windows event-loop setup repair must not permit application networking."""
++import socket
++
++import pytest
++
++
++def test_create_connection_still_forbidden():
++    with pytest.raises(AssertionError, match="Network calls are forbidden"):
++        socket.create_connection(("127.0.0.1", 9))
++
++
++def test_direct_connect_still_forbidden():
++    with socket.socket() as connection:
++        with pytest.raises(AssertionError, match="Network calls are forbidden"):
++            connection.connect(("127.0.0.1", 9))
