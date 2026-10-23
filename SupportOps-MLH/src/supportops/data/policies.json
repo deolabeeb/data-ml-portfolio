@@ -1,0 +1,12 @@
+{
+  "returns-v1": {
+    "source_id": "returns-v1",
+    "title": "DemoStore returns policy (fictional)",
+    "quote": "For this fictional store, unopened items may be considered for return within 14 days of delivery. A support reviewer must assess each request. The assistant cannot approve returns or issue refunds."
+  },
+  "shipping-v1": {
+    "source_id": "shipping-v1",
+    "title": "DemoStore shipping policy (fictional)",
+    "quote": "For this fictional store, standard delivery is estimated at 3 to 5 business days after dispatch. Estimates are not guarantees. Order-specific information must come from the authenticated order lookup."
+  }
+}

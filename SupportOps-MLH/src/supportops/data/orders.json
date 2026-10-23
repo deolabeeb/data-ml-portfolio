@@ -1,0 +1,20 @@
+[
+  {
+    "order_id": "ORD-1001",
+    "customer_id": "cust_demo_a",
+    "status": "in_transit",
+    "estimated_delivery": "2026-10-05 (synthetic estimate)"
+  },
+  {
+    "order_id": "ORD-1002",
+    "customer_id": "cust_demo_a",
+    "status": "processing",
+    "estimated_delivery": "2026-10-07 (synthetic estimate)"
+  },
+  {
+    "order_id": "ORD-2001",
+    "customer_id": "cust_demo_b",
+    "status": "delivered",
+    "estimated_delivery": "2026-09-29 (synthetic delivery date)"
+  }
+]
